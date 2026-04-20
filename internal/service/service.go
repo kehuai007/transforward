@@ -1,12 +1,15 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"transforward/internal/auth"
+	"transforward/internal/config"
 )
 
 const serviceName = "transforward"
@@ -17,10 +20,11 @@ func Install() error {
 		return fmt.Errorf("failed to get executable path: %v", err)
 	}
 
+	cfg := config.Get()
 	if runtime.GOOS == "windows" {
-		return installWindows(exePath)
+		return installWindows(exePath, cfg.WebPort, "admin")
 	}
-	return installLinux(exePath)
+	return installLinux(exePath, cfg.WebPort, "admin")
 }
 
 func Uninstall() error {
@@ -30,15 +34,15 @@ func Uninstall() error {
 	return uninstallLinux()
 }
 
-func installWindows(exePath string) error {
+func installWindows(exePath string, port int, password string) error {
 	installDir := GetInstallPath()
 
-	// Check write permission before attempting install
+	// Create install directory if not exists
 	if err := os.MkdirAll(installDir, 0755); err != nil {
 		return fmt.Errorf("install requires administrator privileges: %v", err)
 	}
 
-	// Test write permission by creating a temp file
+	// Test write permission
 	testFile := filepath.Join(installDir, ".write_test")
 	if err := os.WriteFile(testFile, []byte{}, 0644); err != nil {
 		return fmt.Errorf("install requires administrator privileges: insufficient permissions to write to %s", installDir)
@@ -49,18 +53,40 @@ func installWindows(exePath string) error {
 	exeName := filepath.Base(exePath)
 	installExePath := filepath.Join(installDir, exeName)
 
-	// Read current executable
 	data, err := os.ReadFile(exePath)
 	if err != nil {
 		return fmt.Errorf("failed to read executable: %v", err)
 	}
 
-	// Write to install directory
 	if err := os.WriteFile(installExePath, data, 0755); err != nil {
 		return fmt.Errorf("failed to write executable: %v", err)
 	}
 
-	// Create service using sc.exe
+	// Create data directory and config in install directory
+	dataDir := getDataDirFromExe(installExePath)
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %v", err)
+	}
+
+	// Generate default password hash
+	passwordHash, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %v", err)
+	}
+
+	// Write config
+	cfgMap := map[string]interface{}{
+		"web_port":      port,
+		"password_hash": passwordHash,
+		"rules":         []interface{}{},
+		"log_level":     "info",
+	}
+	cfgPath := filepath.Join(dataDir, "config.json")
+	if err := writeConfig(cfgPath, cfgMap); err != nil {
+		return fmt.Errorf("failed to write config: %v", err)
+	}
+
+	// Create service
 	cmd := exec.Command("sc.exe", "create", serviceName, "binPath=", installExePath, "DisplayName=", "TransForward Service")
 	if err := cmd.Run(); err != nil {
 		if strings.Contains(err.Error(), "already exists") {
@@ -70,22 +96,65 @@ func installWindows(exePath string) error {
 		return err
 	}
 
-	// Set auto-start
 	cmd = exec.Command("sc.exe", "config", serviceName, "start=", "auto")
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	// Start service
+	cmd = exec.Command("sc.exe", "start", serviceName)
 	return cmd.Run()
 }
 
 func uninstallWindows() error {
-	// Stop service first
 	cmd := exec.Command("sc.exe", "stop", serviceName)
 	cmd.Run()
 
-	// Delete service
 	cmd = exec.Command("sc.exe", "delete", serviceName)
 	return cmd.Run()
 }
 
-func installLinux(exePath string) error {
+func installLinux(exePath string, port int, password string) error {
+	installDir := GetInstallPath()
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		return fmt.Errorf("failed to create install directory: %v", err)
+	}
+
+	// Copy binary to install directory
+	exeName := filepath.Base(exePath)
+	installExePath := filepath.Join(installDir, exeName)
+
+	data, err := os.ReadFile(exePath)
+	if err != nil {
+		return fmt.Errorf("failed to read executable: %v", err)
+	}
+
+	if err := os.WriteFile(installExePath, data, 0755); err != nil {
+		return fmt.Errorf("failed to write executable: %v", err)
+	}
+
+	// Create data directory and config
+	dataDir := getDataDirFromExe(installExePath)
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %v", err)
+	}
+
+	passwordHash, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %v", err)
+	}
+
+	cfgMap := map[string]interface{}{
+		"web_port":      port,
+		"password_hash": passwordHash,
+		"rules":         []interface{}{},
+		"log_level":     "info",
+	}
+	cfgPath := filepath.Join(dataDir, "config.json")
+	if err := writeConfig(cfgPath, cfgMap); err != nil {
+		return fmt.Errorf("failed to write config: %v", err)
+	}
+
 	// Create systemd service file
 	serviceContent := fmt.Sprintf(`[Unit]
 Description=TransForward Service
@@ -99,7 +168,7 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-`, exePath)
+`, installExePath)
 
 	servicePath := "/etc/systemd/system/" + serviceName + ".service"
 	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
@@ -120,17 +189,14 @@ WantedBy=multi-user.target
 		return err
 	}
 
-	// Start service immediately
 	cmd = exec.Command("systemctl", "start", serviceName)
 	return cmd.Run()
 }
 
 func uninstallLinux() error {
-	// Stop service
 	cmd := exec.Command("systemctl", "stop", serviceName)
 	cmd.Run()
 
-	// Disable and remove service file
 	cmd = exec.Command("systemctl", "disable", serviceName)
 	cmd.Run()
 
@@ -173,4 +239,22 @@ func GetInstallPath() string {
 		return filepath.Join(os.Getenv("ProgramFiles"), "TransForward")
 	}
 	return "/usr/local/bin"
+}
+
+func getDataDirFromExe(exePath string) string {
+	exeName := filepath.Base(exePath)
+	exeName = strings.TrimSuffix(exeName, ".exe")
+	if idx := strings.LastIndex(exeName, "-"); idx > 0 {
+		exeName = exeName[:idx]
+	}
+	dataDir := "." + exeName + "d"
+	return filepath.Join(filepath.Dir(exePath), dataDir)
+}
+
+func writeConfig(path string, cfg map[string]interface{}) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }

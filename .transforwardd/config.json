@@ -1,0 +1,6 @@
+{
+  "web_port": 9999,
+  "password_hash": "$2a$10$qVLu2c.lAlnr3.UHPaxmCeggXDgUGZe2fsEkAw/..wLcCKg.IoFjy",
+  "rules": [],
+  "log_level": "info"
+}
