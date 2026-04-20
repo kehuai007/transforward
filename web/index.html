@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TransForward</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .card { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); padding: 20px; margin-bottom: 20px; }
+        h1 { color: #333; margin-bottom: 20px; }
+        .login-form { max-width: 400px; margin: 100px auto; }
+        input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 10px; }
+        button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-primary { background: #4CAF50; color: white; }
+        .btn-primary:hover { background: #45a049; }
+        .btn-danger { background: #f44336; color: white; }
+        .btn-danger:hover { background: #da190b; }
+        .btn-warning { background: #ff9800; color: white; }
+        .btn-warning:hover { background: #e68a00; }
+        .btn-secondary { background: #9e9e9e; color: white; }
+        .btn-secondary:hover { background: #757575; }
+        .btn-sm { padding: 4px 8px; font-size: 12px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+        .stat-card { background: #f8f9fa; padding: 15px; border-radius: 4px; }
+        .stat-value { font-size: 28px; font-weight: bold; color: #4CAF50; }
+        .stat-label { color: #666; font-size: 14px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; font-weight: 600; }
+        .nav { background: white; padding: 15px 20px; margin-bottom: 20px; display: flex; gap: 20px; }
+        .nav a { color: #666; text-decoration: none; padding: 8px 16px; border-radius: 4px; }
+        .nav a:hover, .nav a.active { background: #4CAF50; color: white; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+        .modal.show { display: flex; align-items: center; justify-content: center; }
+        .modal-content { background: white; padding: 30px; border-radius: 8px; width: 500px; max-width: 90%; }
+        .form-row { margin-bottom: 15px; }
+        .form-row label { display: block; margin-bottom: 5px; font-weight: 500; }
+        select { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; }
+        .hidden { display: none; }
+        .bytes { font-family: monospace; }
+        .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        .status-running { background: #4CAF50; color: white; }
+        .status-stopped { background: #9e9e9e; color: white; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <script>
+        const API = '';
+        let token = localStorage.getItem('token');
+        let ws = null;
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        async function api(path, options = {}) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers['Authorization'] = 'Bearer ' + token;
+            const res = await fetch(API + path, { ...options, headers: { ...headers, ...options.headers } });
+            if (res.status === 401) { token = null; localStorage.removeItem('token'); showLogin(); return null; }
+            if (res.status >= 400) {
+                const err = await res.json();
+                alert('Error ' + res.status + ': ' + (err.error || 'Unknown error'));
+                return null;
+            }
+            return res.json();
+        }
+
+        function render(html) { document.getElementById('app').innerHTML = html; }
+
+        function showLogin() {
+            render(`<div class="login-form card"><h1>TransForward</h1><form onsubmit="login(event)"><input type="password" id="password" placeholder="Password" required><button type="submit" class="btn btn-primary" style="width:100%">Login</button></form></div>`);
+        }
+
+        async function login(e) {
+            e.preventDefault();
+            const password = document.getElementById('password').value;
+            const res = await fetch(API + '/api/login', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password })
+            });
+            const data = await res.json();
+            if (data.token) { token = data.token; localStorage.setItem('token', token); showApp(); }
+            else alert('Login failed');
+        }
+
+        async function showApp() {
+            render(`<div class="nav"><a href="#" onclick="showDashboard()" class="active">Dashboard</a><a href="#" onclick="showRules()">Rules</a><a href="#" onclick="showSettings()">Settings</a><a href="#" onclick="logout()">Logout</a></div><div id="content"></div>`);
+            connectWS();
+            showDashboard();
+        }
+
+        function logout() { token = null; localStorage.removeItem('token'); ws = null; showLogin(); }
+
+        function connectWS() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(protocol + '//' + location.host + '/ws');
+            ws.onmessage = (e) => { const msg = JSON.parse(e.data); if (msg.type === 'status_update') refreshCurrent(); };
+        }
+
+        async function refreshCurrent() {
+            const content = document.getElementById('content');
+            if (!content) return;
+            const view = content.dataset?.view;
+            if (view === 'dashboard') await showDashboard();
+            else if (view === 'rules') await showRules();
+        }
+
+        async function showDashboard() {
+            const navActive = document.querySelector('.nav .active');
+            if (navActive) navActive.classList.remove('active');
+            const nav1 = document.querySelector('.nav a:nth-child(1)');
+            if (nav1) nav1.classList.add('active');
+            const status = await api('/api/status');
+            if (!status) return;
+            const content = document.getElementById('content');
+            if (content) content.dataset.view = 'dashboard';
+            document.getElementById('content').innerHTML = `<div class="card"><h1>Dashboard</h1><div class="stats"><div class="stat-card"><div class="stat-value">${status.total_rules}</div><div class="stat-label">Total Rules</div></div><div class="stat-card"><div class="stat-value">${status.active_rules}</div><div class="stat-label">Active Rules</div></div><div class="stat-card"><div class="stat-value">${status.total_conns}</div><div class="stat-label">Total Connections</div></div><div class="stat-card"><div class="stat-value">${formatBytes(status.total_bytes_in)}</div><div class="stat-label">Total In</div></div><div class="stat-card"><div class="stat-value">${formatBytes(status.total_bytes_out)}</div><div class="stat-label">Total Out</div></div></div></div>`;
+        }
+
+        async function showRules() {
+            const navActive = document.querySelector('.nav .active');
+            if (navActive) navActive.classList.remove('active');
+            const nav2 = document.querySelector('.nav a:nth-child(2)');
+            if (nav2) nav2.classList.add('active');
+            const rules = await api('/api/rules');
+            const status = await api('/api/status');
+            if (!rules) return;
+            const content = document.getElementById('content');
+            if (content) content.dataset.view = 'rules';
+            const statusMap = {};
+            if (status && status.rule_stats) {
+                status.rule_stats.forEach(s => statusMap[s.rule_id] = s);
+            }
+            let rows = rules.map(r => {
+                const s = statusMap[r.id] || {};
+                const isRunning = r.enable;
+                return `<tr>
+                    <td>${r.name}</td>
+                    <td>${r.protocol.toUpperCase()}</td>
+                    <td>${r.listen}</td>
+                    <td>${r.target}</td>
+                    <td class="bytes">${formatBytes(s.bytes_in||0)}</td>
+                    <td class="bytes">${formatBytes(s.bytes_out||0)}</td>
+                    <td><span class="status-badge ${isRunning?'status-running':'status-stopped'}">${isRunning?'Running':'Stopped'}</span></td>
+                    <td>
+                        ${isRunning
+                            ? `<button class="btn btn-warning btn-sm" onclick="stopRule('${r.id}')">Stop</button>`
+                            : `<button class="btn btn-primary btn-sm" onclick="startRule('${r.id}')">Start</button>`
+                        }
+                        <button class="btn btn-secondary btn-sm" onclick="editRule('${r.id}')">Edit</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteRule('${r.id}')">Delete</button>
+                    </td>
+                </tr>`;
+            }).join('');
+            document.getElementById('content').innerHTML = `<div class="card"><h1>Rules <button class="btn btn-primary" style="float:right" onclick="showRuleModal()">+ Add Rule</button></h1><table><thead><tr><th>Name</th><th>Protocol</th><th>Listen</th><th>Target</th><th>Bytes In</th><th>Bytes Out</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows||'<tr><td colspan="8">No rules</td></tr>'}</tbody></table></div>`;
+        }
+
+        async function startRule(id) {
+            const result = await api('/api/rules/' + id + '/start', { method: 'POST' });
+            if (result) await showRules();
+        }
+
+        async function stopRule(id) {
+            const result = await api('/api/rules/' + id + '/stop', { method: 'POST' });
+            if (result) await showRules();
+        }
+
+        async function editRule(id) {
+            const rules = await api('/api/rules');
+            const rule = rules.find(r => r.id === id);
+            if (rule) showRuleModal(rule);
+        }
+
+        async function showRuleModal(rule = null) {
+            const isEdit = rule !== null;
+            const form = isEdit
+                ? `<h2>Edit Rule</h2><input type="hidden" id="rule-id" value="${rule.id}">`
+                : '<h2>Add Rule</h2>';
+
+            render(`<div class="nav"><a href="#" onclick="showDashboard()">Dashboard</a><a href="#" onclick="showRules()">Rules</a><a href="#" onclick="showSettings()">Settings</a></div><div class="container"><div class="card"><form onsubmit="saveRule(event)">${form}<div class="form-row"><label>Name</label><input type="text" id="rule-name" value="${rule?.name||''}" required></div><div class="form-row"><label>Protocol</label><select id="rule-protocol"><option value="tcp" ${rule?.protocol==='tcp'?'selected':''}>TCP</option><option value="udp" ${rule?.protocol==='udp'?'selected':''}>UDP</option><option value="tcp+udp" ${rule?.protocol==='tcp+udp'?'selected':''}>TCP+UDP</option></select></div><div class="form-row"><label>Listen Port (e.g., 8080)</label><input type="text" id="rule-listen" value="${rule?.listen?.replace(/^:/,'')||''}" placeholder="8080" required pattern="\\d+" title="Port number only (e.g., 8080)"></div><div class="form-row"><label>Target (e.g., 192.168.1.100:80 or example.com:80)</label><input type="text" id="rule-target" value="${rule?.target||''}" placeholder="192.168.1.100:80" required pattern="[^:]+:\\d+" title="Format: host:port (e.g., 192.168.1.100:80)"></div><button type="submit" class="btn btn-primary">Save</button> <button type="button" class="btn btn-secondary" onclick="showRules()">Cancel</button></form></div></div>`);
+        }
+
+        async function saveRule(e) {
+            e.preventDefault();
+            const listenValue = document.getElementById('rule-listen').value.trim();
+            const targetValue = document.getElementById('rule-target').value.trim();
+
+            // Validate listen port (must be digits only)
+            if (!/^\d+$/.test(listenValue)) {
+                alert('Listen port must be numbers only (e.g., 8080)');
+                return;
+            }
+            const listenPort = parseInt(listenValue, 10);
+            if (listenPort < 1 || listenPort > 65535) {
+                alert('Listen port must be between 1 and 65535');
+                return;
+            }
+
+            // Validate target format (host:port)
+            const targetMatch = targetValue.match(/^(.+):(\d+)$/);
+            if (!targetMatch) {
+                alert('Target must be in format host:port (e.g., 192.168.1.100:80)');
+                return;
+            }
+            const targetPort = parseInt(targetMatch[2], 10);
+            if (targetPort < 1 || targetPort > 65535) {
+                alert('Target port must be between 1 and 65535');
+                return;
+            }
+
+            const id = document.getElementById('rule-id')?.value;
+            const ruleData = {
+                name: document.getElementById('rule-name').value,
+                protocol: document.getElementById('rule-protocol').value,
+                listen: ':' + listenPort,
+                target: targetValue
+            };
+
+            if (id) {
+                // Edit: update rule
+                ruleData.id = id;
+                await api('/api/rules/' + id, { method: 'PUT', body: JSON.stringify(ruleData) });
+            } else {
+                // Add: create rule
+                ruleData.id = Date.now().toString();
+                await api('/api/rules', { method: 'POST', body: JSON.stringify(ruleData) });
+            }
+            // Go back to app view (with rules list)
+            await showApp();
+        }
+
+        async function deleteRule(id) {
+            if (confirm('Delete this rule?')) {
+                await api('/api/rules/' + id, { method: 'DELETE' });
+                await showApp();
+            }
+        }
+
+        async function showSettings() {
+            const navActive = document.querySelector('.nav .active');
+            if (navActive) navActive.classList.remove('active');
+            const nav3 = document.querySelector('.nav a:nth-child(3)');
+            if (nav3) nav3.classList.add('active');
+            const content = document.getElementById('content');
+            if (content) content.dataset.view = 'settings';
+            document.getElementById('content').innerHTML = `<div class="card"><h1>Settings</h1><form onsubmit="changePassword(event)"><h3>Change Password</h3><div class="form-row"><label>Old Password</label><input type="password" id="old-password" required></div><div class="form-row"><label>New Password</label><input type="password" id="new-password" required></div><button type="submit" class="btn btn-primary">Update Password</button></form></div>`;
+        }
+
+        async function changePassword(e) {
+            e.preventDefault();
+            const res = await api('/api/password', { method: 'PUT', body: JSON.stringify({
+                old_password: document.getElementById('old-password').value,
+                new_password: document.getElementById('new-password').value
+            })});
+            if (res?.success) alert('Password changed successfully');
+            else alert('Failed to change password');
+        }
+
+        // Init
+        token ? showApp() : showLogin();
+    </script>
+</body>
+</html>
