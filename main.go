@@ -38,27 +38,8 @@ var (
 func main() {
 	flag.Parse()
 
-	cfgPath := config.GetConfigPath()
-	if err := config.Load(cfgPath); err != nil {
-		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Apply custom port if specified
-	if *flagPort > 0 {
-		config.Update(func(c *config.Config) {
-			c.WebPort = *flagPort
-		})
-		config.Save(cfgPath)
-		fmt.Printf("Port set to %d\n", *flagPort)
-	}
-
 	if *flagInstall {
-		if err := service.Install(); err != nil {
-			log.Fatalf("Install failed: %v", err)
-		}
-		fmt.Println("Service installed successfully")
-		fmt.Println("Default password: admin")
-		fmt.Println("Web UI port:", config.Get().WebPort)
+		handleInstall()
 		return
 	}
 
@@ -104,7 +85,39 @@ func main() {
 		return
 	}
 
+	// Normal run: use current directory config
+	cfgPath := config.GetConfigPath()
+	if err := config.Load(cfgPath); err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
 	runServer()
+}
+
+func handleInstall() {
+	// Install mode: use install directory config
+	cfgPath := service.GetConfigPath()
+	if err := config.Load(cfgPath); err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Only update port if explicitly specified
+	if *flagPort > 0 {
+		config.Update(func(c *config.Config) {
+			c.WebPort = *flagPort
+		})
+		config.Save(cfgPath)
+		fmt.Printf("Port set to %d\n", *flagPort)
+	}
+
+	if err := service.Install(); err != nil {
+		log.Fatalf("Install failed: %v", err)
+	}
+	fmt.Println("Service installed successfully")
+	fmt.Printf("Web UI: http://localhost:%d\n", config.Get().WebPort)
+	if *flagPort == 0 {
+		fmt.Println("Default password: admin")
+	}
 }
 
 func handleReset() {
@@ -189,7 +202,6 @@ func runServer() {
 	<-quit
 	log.Println("Shutting down...")
 
-	// Give connected clients time to finish
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

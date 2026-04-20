@@ -63,7 +63,7 @@ func installWindows(exePath string, port int, password string) error {
 	}
 
 	// Create data directory and config in install directory
-	dataDir := getDataDirFromExe(installExePath)
+	dataDir := GetDataDirFromExe(installExePath)
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %v", err)
 	}
@@ -134,7 +134,7 @@ func installLinux(exePath string, port int, password string) error {
 	}
 
 	// Create data directory and config
-	dataDir := getDataDirFromExe(installExePath)
+	dataDir := GetDataDirFromExe(installExePath)
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %v", err)
 	}
@@ -241,14 +241,27 @@ func GetInstallPath() string {
 	return "/usr/local/bin"
 }
 
-func getDataDirFromExe(exePath string) string {
+func GetConfigPath() string {
+	return filepath.Join(GetDataDirFromPath(GetInstallPath()), "config.json")
+}
+
+func GetDataDirFromPath(baseDir string) string {
+	// transforward-windows-amd64 -> .transforwardd
+	exeName := filepath.Base(os.Args[0])
+	exeName = strings.TrimSuffix(exeName, ".exe")
+	if idx := strings.LastIndex(exeName, "-"); idx > 0 {
+		exeName = exeName[:idx]
+	}
+	return filepath.Join(baseDir, "."+exeName+"d")
+}
+
+func GetDataDirFromExe(exePath string) string {
 	exeName := filepath.Base(exePath)
 	exeName = strings.TrimSuffix(exeName, ".exe")
 	if idx := strings.LastIndex(exeName, "-"); idx > 0 {
 		exeName = exeName[:idx]
 	}
-	dataDir := "." + exeName + "d"
-	return filepath.Join(filepath.Dir(exePath), dataDir)
+	return filepath.Join(filepath.Dir(exePath), "."+exeName+"d")
 }
 
 func writeConfig(path string, cfg map[string]interface{}) error {
