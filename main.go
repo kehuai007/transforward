@@ -57,6 +57,10 @@ func main() {
 			log.Fatalf("Install failed: %v", err)
 		}
 		fmt.Println("Service installed successfully")
+		if err := service.Start(); err != nil {
+			log.Fatalf("Failed to start service: %v", err)
+		}
+		fmt.Println("Service started successfully")
 		return
 	}
 
