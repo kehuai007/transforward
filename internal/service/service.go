@@ -107,15 +107,21 @@ WantedBy=multi-user.target
 	}
 
 	// Reload systemd and enable service
-	cmds := []string{"systemctl", "daemon-reload"}
-	for _, c := range cmds {
+	for _, c := range []string{"systemctl", "daemon-reload"} {
 		cmd := exec.Command(c)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to run %s: %v", c, err)
 		}
 	}
 
-	cmd := exec.Command("systemctl", "enable", serviceName)
+	var cmd *exec.Cmd
+	cmd = exec.Command("systemctl", "enable", serviceName)
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	// Start service immediately
+	cmd = exec.Command("systemctl", "start", serviceName)
 	return cmd.Run()
 }
 
