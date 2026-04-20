@@ -26,6 +26,9 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
 
+      - name: Tidy modules
+        run: go mod tidy
+
       - name: Build
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
