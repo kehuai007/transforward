@@ -31,12 +31,40 @@ func Uninstall() error {
 }
 
 func installWindows(exePath string) error {
+	installDir := GetInstallPath()
+
+	// Check write permission before attempting install
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		return fmt.Errorf("install requires administrator privileges: %v", err)
+	}
+
+	// Test write permission by creating a temp file
+	testFile := filepath.Join(installDir, ".write_test")
+	if err := os.WriteFile(testFile, []byte{}, 0644); err != nil {
+		return fmt.Errorf("install requires administrator privileges: insufficient permissions to write to %s", installDir)
+	}
+	os.Remove(testFile)
+
+	// Copy binary to install directory
+	exeName := filepath.Base(exePath)
+	installExePath := filepath.Join(installDir, exeName)
+
+	// Read current executable
+	data, err := os.ReadFile(exePath)
+	if err != nil {
+		return fmt.Errorf("failed to read executable: %v", err)
+	}
+
+	// Write to install directory
+	if err := os.WriteFile(installExePath, data, 0755); err != nil {
+		return fmt.Errorf("failed to write executable: %v", err)
+	}
+
 	// Create service using sc.exe
-	cmd := exec.Command("sc.exe", "create", serviceName, "binPath=", exePath, "DisplayName=", "TransForward Service")
+	cmd := exec.Command("sc.exe", "create", serviceName, "binPath=", installExePath, "DisplayName=", "TransForward Service")
 	if err := cmd.Run(); err != nil {
-		// If service already exists, try to update
 		if strings.Contains(err.Error(), "already exists") {
-			cmd = exec.Command("sc.exe", "config", serviceName, "binPath=", exePath)
+			cmd = exec.Command("sc.exe", "config", serviceName, "binPath=", installExePath)
 			return cmd.Run()
 		}
 		return err
