@@ -102,20 +102,22 @@ func handleInstall() {
 	}
 
 	// Only update port if explicitly specified
+	updatePort := false
 	if *flagPort > 0 {
 		config.Update(func(c *config.Config) {
 			c.WebPort = *flagPort
 		})
 		config.Save(cfgPath)
 		fmt.Printf("Port set to %d\n", *flagPort)
+		updatePort = true
 	}
 
-	if err := service.Install(); err != nil {
+	if err := service.Install(updatePort); err != nil {
 		log.Fatalf("Install failed: %v", err)
 	}
 	fmt.Println("Service installed successfully")
 	fmt.Printf("Web UI: http://localhost:%d\n", config.Get().WebPort)
-	if *flagPort == 0 {
+	if !updatePort {
 		fmt.Println("Default password: admin")
 	}
 }

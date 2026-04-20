@@ -14,7 +14,7 @@ import (
 
 const serviceName = "transforward"
 
-func Install() error {
+func Install(updatePort bool) error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %v", err)
@@ -22,9 +22,9 @@ func Install() error {
 
 	cfg := config.Get()
 	if runtime.GOOS == "windows" {
-		return installWindows(exePath, cfg.WebPort, "admin")
+		return installWindows(exePath, cfg.WebPort, "admin", updatePort)
 	}
-	return installLinux(exePath, cfg.WebPort, "admin")
+	return installLinux(exePath, cfg.WebPort, "admin", updatePort)
 }
 
 func Uninstall() error {
@@ -34,7 +34,7 @@ func Uninstall() error {
 	return uninstallLinux()
 }
 
-func installWindows(exePath string, port int, password string) error {
+func installWindows(exePath string, port int, password string, updatePort bool) error {
 	installDir := GetInstallPath()
 
 	// Create install directory if not exists
@@ -62,29 +62,41 @@ func installWindows(exePath string, port int, password string) error {
 		return fmt.Errorf("failed to write executable: %v", err)
 	}
 
-	// Create data directory and config in install directory
+	// Create data directory in install directory
 	dataDir := GetDataDirFromExe(installExePath)
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %v", err)
 	}
 
-	// Generate default password hash
-	passwordHash, err := auth.HashPassword(password)
-	if err != nil {
-		return fmt.Errorf("failed to hash password: %v", err)
-	}
-
-	// Write config
-	cfgMap := map[string]interface{}{
-		"web_port":      port,
-		"password_hash": passwordHash,
-		"rules":         []interface{}{},
-		"log_level":     "info",
-	}
+	// Handle config: only create/overwrite if not exists or port needs update
 	cfgPath := filepath.Join(dataDir, "config.json")
-	if err := writeConfig(cfgPath, cfgMap); err != nil {
-		return fmt.Errorf("failed to write config: %v", err)
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		// Config doesn't exist, create with defaults
+		passwordHash, err := auth.HashPassword(password)
+		if err != nil {
+			return fmt.Errorf("failed to hash password: %v", err)
+		}
+		cfgMap := map[string]interface{}{
+			"web_port":      port,
+			"password_hash": passwordHash,
+			"rules":         []interface{}{},
+			"log_level":     "info",
+		}
+		if err := writeConfig(cfgPath, cfgMap); err != nil {
+			return fmt.Errorf("failed to write config: %v", err)
+		}
+	} else if updatePort {
+		// Config exists and port was explicitly specified, update it
+		var cfg map[string]interface{}
+		if data, err := os.ReadFile(cfgPath); err == nil {
+			json.Unmarshal(data, &cfg)
+		}
+		cfg["web_port"] = port
+		if err := writeConfig(cfgPath, cfg); err != nil {
+			return fmt.Errorf("failed to update config: %v", err)
+		}
 	}
+	// If config exists and port not specified, do nothing (keep existing config)
 
 	// Create service
 	cmd := exec.Command("sc.exe", "create", serviceName, "binPath=", installExePath, "DisplayName=", "TransForward Service")
@@ -114,7 +126,7 @@ func uninstallWindows() error {
 	return cmd.Run()
 }
 
-func installLinux(exePath string, port int, password string) error {
+func installLinux(exePath string, port int, password string, updatePort bool) error {
 	installDir := GetInstallPath()
 	if err := os.MkdirAll(installDir, 0755); err != nil {
 		return fmt.Errorf("failed to create install directory: %v", err)
@@ -133,26 +145,37 @@ func installLinux(exePath string, port int, password string) error {
 		return fmt.Errorf("failed to write executable: %v", err)
 	}
 
-	// Create data directory and config
+	// Create data directory in install directory
 	dataDir := GetDataDirFromExe(installExePath)
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %v", err)
 	}
 
-	passwordHash, err := auth.HashPassword(password)
-	if err != nil {
-		return fmt.Errorf("failed to hash password: %v", err)
-	}
-
-	cfgMap := map[string]interface{}{
-		"web_port":      port,
-		"password_hash": passwordHash,
-		"rules":         []interface{}{},
-		"log_level":     "info",
-	}
+	// Handle config: only create/overwrite if not exists or port needs update
 	cfgPath := filepath.Join(dataDir, "config.json")
-	if err := writeConfig(cfgPath, cfgMap); err != nil {
-		return fmt.Errorf("failed to write config: %v", err)
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		passwordHash, err := auth.HashPassword(password)
+		if err != nil {
+			return fmt.Errorf("failed to hash password: %v", err)
+		}
+		cfgMap := map[string]interface{}{
+			"web_port":      port,
+			"password_hash": passwordHash,
+			"rules":         []interface{}{},
+			"log_level":     "info",
+		}
+		if err := writeConfig(cfgPath, cfgMap); err != nil {
+			return fmt.Errorf("failed to write config: %v", err)
+		}
+	} else if updatePort {
+		var cfg map[string]interface{}
+		if data, err := os.ReadFile(cfgPath); err == nil {
+			json.Unmarshal(data, &cfg)
+		}
+		cfg["web_port"] = port
+		if err := writeConfig(cfgPath, cfg); err != nil {
+			return fmt.Errorf("failed to update config: %v", err)
+		}
 	}
 
 	// Create systemd service file
